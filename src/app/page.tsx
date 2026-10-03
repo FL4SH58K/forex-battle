@@ -7,6 +7,7 @@ import {
   createChart,
   createSeriesMarkers,
   type CandlestickData,
+  type SeriesMarker,
   type Time,
 } from "lightweight-charts";
 import {
@@ -88,6 +89,8 @@ export default function App() {
   const positionsRef = useRef<Position[]>([]);
   const priceRef = useRef(currentPrice);
   const timeRef = useRef(currentTime);
+  const markersRef = useRef<SeriesMarker<Time>[]>([]);
+  const setMarkersRef = useRef<((markers: SeriesMarker<Time>[]) => void) | null>(null);
 
   useEffect(() => {
     positionsRef.current = positions;
@@ -164,7 +167,9 @@ export default function App() {
       wickDownColor: "#ef4444",
     });
     series.setData(historicalData);
+    markersRef.current = [];
     const markers = createSeriesMarkers<Time>(series, []);
+    setMarkersRef.current = markers.setMarkers;
     let lastPrice = initialPrice;
     let time = Number(historicalData.at(-1)?.time);
 
@@ -186,6 +191,7 @@ export default function App() {
     return () => {
       clearInterval(interval);
       markers.setMarkers([]);
+      setMarkersRef.current = null;
       chart.remove();
     };
   }, [screen]);
@@ -295,6 +301,19 @@ export default function App() {
       time: timeRef.current,
     };
     setPositions((previous) => [...previous, position]);
+    const marker: SeriesMarker<Time> = {
+      time: position.time as Time,
+      position: type === "BUY" ? "belowBar" : "aboveBar",
+      color: type === "BUY" ? "#10b981" : "#ef4444",
+      shape: type === "BUY" ? "arrowUp" : "arrowDown",
+      text: `${type} ${lotSize}`,
+      price: position.entry,
+    };
+    markersRef.current = [
+      ...markersRef.current,
+      marker,
+    ].sort((left, right) => Number(left.time) - Number(right.time));
+    setMarkersRef.current?.(markersRef.current);
     setSlInput("");
     setTpInput("");
   };
