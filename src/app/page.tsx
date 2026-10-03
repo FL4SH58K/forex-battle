@@ -526,13 +526,6 @@ export default function App() {
     void updateFirebaseBalance(newBalance);
   };
 
-  const goToScreen = (nextScreen: Screen) => {
-    if (nextScreen !== "TRADE") {
-      sessionEndedRef.current = true;
-    }
-    setScreen(nextScreen);
-  };
-
   const enterTradingFloor = () => {
     if (!isStarted || !playerStartTime || isDisqualified || timeUp) return;
     const elapsed = Math.min(SESSION_SECONDS, Math.max(0, getElapsedSeconds(playerStartTime)));
@@ -595,7 +588,7 @@ export default function App() {
             />
             <input
               type="text"
-              placeholder="Trader Alias"
+              placeholder="Full Name"
               required
               value={alias}
               onChange={(event) => setAlias(event.target.value)}
@@ -850,10 +843,27 @@ export default function App() {
               Your trading account has been closed for this battle.
             </p>
             <button
-              onClick={() => goToScreen("LOBBY")}
+              onClick={() => {
+                setUserId(null);
+                setAlias("");
+                setEmail("");
+                setBalance(STARTING_BALANCE);
+                setPositions([]);
+                setHistory([]);
+                setIsDisqualified(false);
+                setIsStarted(false);
+                setPlayerStartTime(null);
+                setTimeUp(false);
+                setTimeLeft(SESSION_SECONDS);
+                localStorage.removeItem(USER_STORAGE_KEY);
+                localStorage.removeItem(POSITIONS_STORAGE_KEY);
+                localStorage.removeItem(HISTORY_STORAGE_KEY);
+                sessionEndedRef.current = false;
+                setScreen("LOGIN");
+              }}
               className="w-full max-w-xs rounded-xl bg-red-600 px-8 py-4 text-base font-bold text-white shadow-lg shadow-red-600/30 transition-all hover:bg-red-500"
             >
-              RETURN TO LOBBY
+              REGISTER NEW PLAYER
             </button>
           </div>
         </div>
