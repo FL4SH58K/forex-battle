@@ -40,39 +40,63 @@ type MarketCandle = {
 
 const STARTING_BALANCE = 10000;
 const SESSION_SECONDS = 25 * 60;
+const MAX_OPEN_POSITIONS = 5;
+const MAX_LOT_SIZE = 1.5;
+const configuredSpeedMultiplier = Number(process.env.NEXT_PUBLIC_TEST_SPEED_MULTIPLIER ?? "1");
+const TEST_SPEED_MULTIPLIER =
+  Number.isFinite(configuredSpeedMultiplier) && configuredSpeedMultiplier >= 1
+    ? configuredSpeedMultiplier
+    : 1;
+
+const getElapsedSeconds = (startTime: number) =>
+  Math.floor(((Date.now() - startTime) / 1000) * TEST_SPEED_MULTIPLIER);
 
 const generateScriptedMarket = (): MarketCandle[] => {
   const candles: MarketCandle[] = [];
   let price = 2000;
 
   for (let tick = -100; tick <= SESSION_SECONDS; tick += 1) {
-    let trend = 0;
-    let volatility = 0.5;
+    let targetOffset = 0;
+    let volatility = 0.7;
     if (tick < 0) {
-      trend = 0;
-    } else if (tick < 300) {
-      trend = 0.2;
-      volatility = 0.6;
+      targetOffset = 0;
+    } else if (tick < 180) {
+      targetOffset = (tick / 180) * 12;
+      volatility = 0.5;
+    } else if (tick < 360) {
+      targetOffset = 12 + Math.sin((tick - 180) * 0.03) * 6;
+      volatility = 0.8;
     } else if (tick < 480) {
-      volatility = 4;
-    } else if (tick < 720) {
-      trend = -1.5;
-      volatility = 1.8;
-    } else if (tick < 1080) {
-      trend = 0.05;
-    } else if (tick < 1320) {
-      trend = -0.5;
+      targetOffset = 15 - ((tick - 360) / 120) * 8;
       volatility = 1;
+    } else if (tick < 630) {
+      targetOffset = 7 + ((tick - 480) / 150) * 8;
+      volatility = 1.4;
+    } else if (tick < 810) {
+      targetOffset = 10 + Math.sin(tick * 0.4) * 2.5;
+      volatility = 0.6;
+    } else if (tick < 990) {
+      targetOffset = 10 - ((tick - 810) / 180) * 18;
+      volatility = 1.6;
+    } else if (tick < 1140) {
+      targetOffset = -8 + ((tick - 990) / 150) * 10;
+      volatility = 0.9;
+    } else if (tick < 1290) {
+      targetOffset = 2 + Math.sin((tick - 1140) * 0.05) * 1.5;
+      volatility = 0.8;
     } else {
-      trend = 2;
-      volatility = 3;
+      targetOffset = 2 + ((tick - 1290) / 210) * 25;
+      volatility = 2.2;
     }
 
     const randomA = Math.sin(tick * 12.9898) * 43758.5453;
     const randomB = Math.sin(tick * 78.233) * 43758.5453;
     const fractionA = randomA - Math.floor(randomA);
     const fractionB = randomB - Math.floor(randomB);
-    const move = trend + (fractionA > 0.5 ? 1 : -1) * fractionB * volatility;
+    const targetPrice = 2000 + targetOffset;
+    const move =
+      (targetPrice - price) * 0.12 +
+      (fractionA > 0.5 ? 1 : -1) * fractionB * volatility;
     const open = price;
     const close = open + move;
     candles.push({
@@ -220,10 +244,7 @@ export default function App() {
     });
     const activeStartTime = playerStartTime ?? Date.now();
     const baseTimestamp = Math.floor(activeStartTime / 1000);
-    const elapsedAtEntry = Math.min(
-      SESSION_SECONDS,
-      Math.max(0, Math.floor((Date.now() - activeStartTime) / 1000)),
-    );
+    const elapsedAtEntry = Math.min(SESSION_SECONDS, Math.max(0, getElapsedSeconds(activeStartTime)));
     const visibleMarket = scriptedMarket
       .filter((candle) => candle.tick <= elapsedAtEntry)
       .map((candle) => ({
@@ -262,10 +283,7 @@ export default function App() {
     const interval = setInterval(() => {
       const currentStartTime = playerStartTimeRef.current;
       if (sessionEndedRef.current || !isStarted || !currentStartTime) return;
-      const elapsed = Math.min(
-        SESSION_SECONDS,
-        Math.max(0, Math.floor((Date.now() - currentStartTime) / 1000)),
-      );
+      const elapsed = Math.min(SESSION_SECONDS, Math.max(0, getElapsedSeconds(currentStartTime)));
       const candle = scriptedMarket.find((item) => item.tick === elapsed);
       if (!candle || elapsed <= renderedTick) return;
       series.update({
@@ -302,7 +320,7 @@ export default function App() {
       return;
     }
     const timer = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - playerStartTime) / 1000);
+      const elapsed = Math.min(SESSION_SECONDS, Math.max(0, getElapsedSeconds(playerStartTime)));
       const remaining = Math.max(0, SESSION_SECONDS - elapsed);
       setTimeLeft(remaining);
       if (remaining === 0) {
@@ -395,6 +413,8 @@ export default function App() {
       !playerStartTime ||
       !Number.isFinite(lotSize) ||
       lotSize <= 0 ||
+      lotSize > MAX_LOT_SIZE ||
+      positionsRef.current.length >= MAX_OPEN_POSITIONS ||
       (stopLoss !== null && !Number.isFinite(stopLoss)) ||
       (takeProfit !== null && !Number.isFinite(takeProfit))
     ) {
@@ -445,10 +465,7 @@ export default function App() {
 
   const enterTradingFloor = () => {
     if (!isStarted || !playerStartTime || isDisqualified || timeUp) return;
-    const elapsed = Math.min(
-      SESSION_SECONDS,
-      Math.max(0, Math.floor((Date.now() - playerStartTime) / 1000)),
-    );
+    const elapsed = Math.min(SESSION_SECONDS, Math.max(0, getElapsedSeconds(playerStartTime)));
     if (elapsed >= SESSION_SECONDS) {
       setTimeLeft(0);
       setTimeUp(true);
@@ -605,11 +622,12 @@ export default function App() {
             <div className="flex flex-col gap-5 rounded-xl border border-slate-800 bg-slate-900 p-5">
               <h3 className="border-b border-slate-800 pb-2 font-bold text-white">Order Execution</h3>
               <label className="text-xs font-bold uppercase text-slate-400">
-                Volume (Lots)
+                Volume (Lots, max {MAX_LOT_SIZE})
                 <input
                   type="number"
                   value={lotSize}
                   min="0.1"
+                  max={MAX_LOT_SIZE}
                   step="0.1"
                   onChange={(event) => setLotSize(Number(event.target.value))}
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white focus:border-blue-500 focus:outline-none"
@@ -636,14 +654,24 @@ export default function App() {
               </div>
               <button
                 onClick={() => handleTrade("SELL")}
-                disabled={isDisqualified || timeUp || !isStarted}
+                disabled={
+                  isDisqualified ||
+                  timeUp ||
+                  !isStarted ||
+                  positions.length >= MAX_OPEN_POSITIONS
+                }
                 className="rounded-lg bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 disabled:opacity-50"
               >
                 SELL BY MARKET
               </button>
               <button
                 onClick={() => handleTrade("BUY")}
-                disabled={isDisqualified || timeUp || !isStarted}
+                disabled={
+                  isDisqualified ||
+                  timeUp ||
+                  !isStarted ||
+                  positions.length >= MAX_OPEN_POSITIONS
+                }
                 className="rounded-lg bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 disabled:opacity-50"
               >
                 BUY BY MARKET
@@ -653,7 +681,9 @@ export default function App() {
 
           <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
             <div className="flex items-center justify-between border-b border-slate-800 p-4">
-              <h3 className="font-bold text-white">Active Positions ({positions.length})</h3>
+              <h3 className="font-bold text-white">
+                Active Positions ({positions.length}/{MAX_OPEN_POSITIONS})
+              </h3>
               {positions.length > 0 && (
                 <button
                   onClick={() => closeAllTrades()}
