@@ -300,6 +300,7 @@ export default function App() {
       setCurrentPrice(candle.close);
       setTimeLeft(SESSION_SECONDS - elapsed);
       if (elapsed >= SESSION_SECONDS) {
+        chart.timeScale().fitContent();
         setTimeUp(true);
         sessionEndedRef.current = true;
       }
