@@ -228,9 +228,11 @@ export default function App() {
         setTimeLeft(SESSION_SECONDS);
         sessionEndedRef.current = false;
       }
-      if (data.isStarted === true && !timeUp && screen === "LOBBY") setScreen("TRADE");
+      if (data.isStarted === true && !isDisqualified && !timeUp && screen === "LOBBY") {
+        setScreen("TRADE");
+      }
     });
-  }, [screen, timeUp, userId]);
+  }, [isDisqualified, screen, timeUp, userId]);
 
   useEffect(() => {
     const restoreTimer = window.setTimeout(() => {
@@ -614,24 +616,42 @@ export default function App() {
             <p className="mt-3 text-slate-400">
               Your starting balance is <span className="font-mono text-emerald-400">$10,000.00</span>.
             </p>
-            <div className="mt-8 rounded-xl border border-slate-800 bg-slate-950 p-5">
-              <p className="text-xs font-bold uppercase text-slate-500">Global market status</p>
-              <p className={`mt-2 text-xl font-black ${isStarted ? "text-emerald-400" : "text-yellow-400"}`}>
-              {isStarted ? "CHALLENGE STARTED" : "WAITING FOR ADMIN"}
-              </p>
-              <p className="mt-2 text-sm text-slate-400">
-              {isStarted
-                ? "Your individual 25-minute challenge is ready."
-                : "The administrator will start your individual challenge when ready."}
-              </p>
+            <div className="mt-8 w-full rounded-xl border border-slate-800 bg-slate-950 p-5">
+              <p className="mb-2 text-xs font-bold uppercase text-slate-500">Staging Status</p>
+              {isDisqualified ? (
+                <p className="text-lg font-black tracking-widest text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.8)]">
+                  DISQUALIFIED
+                </p>
+              ) : isStarted ? (
+                <p className="text-lg font-bold text-emerald-400">READY TO ENTER</p>
+              ) : (
+                <p className="animate-pulse font-bold tracking-widest text-yellow-500">
+                  WAITING FOR ADMIN TO START
+                </p>
+              )}
             </div>
-            <button
-              onClick={enterTradingFloor}
-              disabled={!isStarted || !playerStartTime}
-              className="mt-8 w-full rounded-lg bg-blue-600 p-3 font-bold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              ENTER TRADING FLOOR
-            </button>
+            {isDisqualified ? (
+              <button
+                type="button"
+                disabled
+                className="mt-8 w-full cursor-not-allowed rounded-xl border border-red-900/50 bg-slate-900 p-4 text-lg font-black tracking-wide text-red-500/50"
+              >
+                BATTLE OVER
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={enterTradingFloor}
+                disabled={!isStarted || !playerStartTime}
+                className={`mt-8 w-full rounded-xl p-4 text-lg font-black tracking-wide shadow-lg transition-all ${
+                  isStarted
+                    ? "bg-blue-600 text-white shadow-blue-600/20 hover:bg-blue-500"
+                    : "cursor-not-allowed bg-slate-800 text-slate-500"
+                }`}
+              >
+                ENTER TRADING FLOOR
+              </button>
+            )}
           </section>
         </main>
       )}
