@@ -170,6 +170,10 @@ export default function App() {
     markersRef.current = [];
     const markers = createSeriesMarkers<Time>(series, []);
     setMarkersRef.current = markers.setMarkers;
+    const resizeObserver = new ResizeObserver(() => {
+      chart.applyOptions({ width: container.clientWidth });
+    });
+    resizeObserver.observe(container);
     let lastPrice = initialPrice;
     let time = Number(historicalData.at(-1)?.time);
 
@@ -192,6 +196,7 @@ export default function App() {
       clearInterval(interval);
       markers.setMarkers([]);
       setMarkersRef.current = null;
+      resizeObserver.disconnect();
       chart.remove();
     };
   }, [screen]);
