@@ -42,6 +42,9 @@ const STARTING_BALANCE = 10000;
 const SESSION_SECONDS = 25 * 60;
 const MAX_OPEN_POSITIONS = 5;
 const MAX_LOT_SIZE = 1.5;
+const USER_STORAGE_KEY = "forex_user";
+const POSITIONS_STORAGE_KEY = "forex_positions";
+const HISTORY_STORAGE_KEY = "forex_history";
 const configuredSpeedMultiplier = Number(process.env.NEXT_PUBLIC_TEST_SPEED_MULTIPLIER ?? "1");
 const TEST_SPEED_MULTIPLIER =
   Number.isFinite(configuredSpeedMultiplier) && configuredSpeedMultiplier >= 1
@@ -146,6 +149,7 @@ export default function App() {
   const markersRef = useRef<SeriesMarker<Time>[]>([]);
   const setMarkersRef = useRef<((markers: SeriesMarker<Time>[]) => void) | null>(null);
   const playerStartTimeRef = useRef<number | null>(null);
+  const restoredStorageRef = useRef(false);
 
   useEffect(() => {
     positionsRef.current = positions;
@@ -218,12 +222,69 @@ export default function App() {
         setScreen("LOBBY");
         setPositions([]);
         setHistory([]);
+        localStorage.removeItem(POSITIONS_STORAGE_KEY);
+        localStorage.removeItem(HISTORY_STORAGE_KEY);
         setTimeUp(false);
         setTimeLeft(SESSION_SECONDS);
         sessionEndedRef.current = false;
       }
+      if (data.isStarted === true && !timeUp && screen === "LOBBY") setScreen("TRADE");
     });
-  }, [screen, userId]);
+  }, [screen, timeUp, userId]);
+
+  useEffect(() => {
+    const restoreTimer = window.setTimeout(() => {
+      try {
+        const storedUser = localStorage.getItem(USER_STORAGE_KEY);
+        if (!storedUser) return;
+        const parsedUser = JSON.parse(storedUser) as {
+          id?: string;
+          alias?: string;
+          email?: string;
+        };
+        if (!parsedUser.id) return;
+        setUserId(parsedUser.id);
+        setAlias(typeof parsedUser.alias === "string" ? parsedUser.alias : "");
+        setEmail(typeof parsedUser.email === "string" ? parsedUser.email : "");
+        setScreen("LOBBY");
+
+        const storedPositions = localStorage.getItem(POSITIONS_STORAGE_KEY);
+        const storedHistory = localStorage.getItem(HISTORY_STORAGE_KEY);
+        if (storedPositions) {
+          const parsedPositions = JSON.parse(storedPositions);
+          if (Array.isArray(parsedPositions)) setPositions(parsedPositions);
+        }
+        if (storedHistory) {
+          const parsedHistory = JSON.parse(storedHistory);
+          if (Array.isArray(parsedHistory)) setHistory(parsedHistory);
+        }
+      } catch (error) {
+        console.error("Unable to restore the saved trading session:", error);
+      } finally {
+        restoredStorageRef.current = true;
+      }
+    }, 0);
+
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!restoredStorageRef.current) return;
+    try {
+      localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(positions));
+    } catch (error) {
+      console.error("Unable to save open positions locally:", error);
+    }
+  }, [positions]);
+
+  useEffect(() => {
+    if (!restoredStorageRef.current) return;
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch (error) {
+      console.error("Unable to save trade history locally:", error);
+    }
+  }, [history]);
 
   useEffect(() => {
     if (screen !== "TRADE" || !chartContainerRef.current) return;
@@ -232,7 +293,7 @@ export default function App() {
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#94a3b8" },
       grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
       width: container.clientWidth,
-      height: 450,
+      height: container.clientHeight || 450,
       timeScale: { timeVisible: true, secondsVisible: false },
     });
     const series = chart.addSeries(CandlestickSeries, {
@@ -396,6 +457,12 @@ export default function App() {
         isStarted: false,
         startTime: null,
       });
+      localStorage.setItem(
+        USER_STORAGE_KEY,
+        JSON.stringify({ id: player.id, alias, email }),
+      );
+      localStorage.removeItem(POSITIONS_STORAGE_KEY);
+      localStorage.removeItem(HISTORY_STORAGE_KEY);
       setUserId(player.id);
       setScreen("LOBBY");
       sessionEndedRef.current = false;
@@ -618,7 +685,7 @@ export default function App() {
               <div className="absolute left-4 top-4 z-10 rounded bg-slate-800/80 px-3 py-1 font-mono text-lg font-bold text-emerald-400">
                 XAUUSD {currentPrice.toFixed(2)}
               </div>
-              <div ref={chartContainerRef} className="w-full" />
+              <div ref={chartContainerRef} className="h-[300px] w-full md:h-[450px]" />
             </div>
             <div className="flex flex-col gap-5 rounded-xl border border-slate-800 bg-slate-900 p-5">
               <h3 className="border-b border-slate-800 pb-2 font-bold text-white">Order Execution</h3>
@@ -631,7 +698,7 @@ export default function App() {
                   max={MAX_LOT_SIZE}
                   step="0.1"
                   onChange={(event) => setLotSize(Number(event.target.value))}
-                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white focus:border-blue-500 focus:outline-none"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base font-mono text-white focus:border-blue-500 focus:outline-none"
                   disabled={isDisqualified || timeUp || !isStarted}
                 />
               </label>
@@ -647,7 +714,7 @@ export default function App() {
                       placeholder="Optional"
                       value={value as string}
                       onChange={(event) => (setter as (value: string) => void)(event.target.value)}
-                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 font-mono text-white focus:outline-none"
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-base font-mono text-white focus:outline-none"
                       disabled={isDisqualified || timeUp || !isStarted}
                     />
                   </label>
@@ -661,7 +728,7 @@ export default function App() {
                   !isStarted ||
                   positions.length >= MAX_OPEN_POSITIONS
                 }
-                className="rounded-lg bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 disabled:opacity-50"
+                className="rounded-lg bg-red-500 py-4 font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 disabled:opacity-50 md:py-3"
               >
                 SELL BY MARKET
               </button>
@@ -673,7 +740,7 @@ export default function App() {
                   !isStarted ||
                   positions.length >= MAX_OPEN_POSITIONS
                 }
-                className="rounded-lg bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 disabled:opacity-50"
+                className="rounded-lg bg-emerald-500 py-4 font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 disabled:opacity-50 md:py-3"
               >
                 BUY BY MARKET
               </button>
@@ -717,7 +784,15 @@ export default function App() {
                         <td className="px-4 py-3 font-mono text-slate-500">{position.sl ?? "-"}</td>
                         <td className="px-4 py-3 font-mono text-slate-500">{position.tp ?? "-"}</td>
                         <td className={`px-4 py-3 text-right font-mono font-bold ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>{pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-center"><button onClick={() => closeTrade(position)} className="rounded bg-slate-700 px-3 py-1 text-xs font-bold hover:bg-slate-600">X</button></td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            type="button"
+                            onClick={() => closeTrade(position)}
+                            className="rounded bg-slate-700 px-4 py-2 text-sm font-bold hover:bg-slate-600"
+                          >
+                            X
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
