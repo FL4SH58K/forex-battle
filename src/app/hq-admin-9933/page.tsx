@@ -8,17 +8,12 @@ import {
   onSnapshot,
   orderBy,
   query,
-  setDoc,
   updateDoc,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { db } from "../../../lib/firebase";
-
-type GameState = {
-  isRunning: boolean;
-  startTime: number | null;
-};
+import TournamentResults from "../../components/TournamentResults";
 
 type Player = {
   id: string;
@@ -26,14 +21,14 @@ type Player = {
   email: string;
   balance: number;
   isDisqualified: boolean;
+  isStarted: boolean;
+  startTime: number | null;
 };
 
 type ActionState = {
   playerId: string | null;
-  type: "balance" | "disqualify" | "delete" | null;
+  type: "balance" | "start" | "disqualify" | "reset" | "delete" | null;
 };
-
-const initialGameState: GameState = { isRunning: false, startTime: null };
 
 const toPlayer = (snapshot: QueryDocumentSnapshot<DocumentData>): Player => {
   const data = snapshot.data();
@@ -43,36 +38,18 @@ const toPlayer = (snapshot: QueryDocumentSnapshot<DocumentData>): Player => {
     email: typeof data.email === "string" ? data.email : "—",
     balance: typeof data.balance === "number" && Number.isFinite(data.balance) ? data.balance : 0,
     isDisqualified: data.isDisqualified === true,
+    isStarted: data.isStarted === true,
+    startTime: typeof data.startTime === "number" ? data.startTime : null,
   };
 };
 
 export default function SecretAdminDashboard() {
   const [players, setPlayers] = useState<Player[]>([]);
-  const [gameState, setGameState] = useState<GameState>(initialGameState);
   const [error, setError] = useState<string | null>(null);
   const [actionState, setActionState] = useState<ActionState>({
     playerId: null,
     type: null,
   });
-
-  useEffect(() => {
-    return onSnapshot(
-      doc(db, "system", "gameState"),
-      (snapshot) => {
-        if (!snapshot.exists()) {
-          setGameState(initialGameState);
-          return;
-        }
-
-        const data = snapshot.data();
-        setGameState({
-          isRunning: data.isRunning === true,
-          startTime: typeof data.startTime === "number" ? data.startTime : null,
-        });
-      },
-      () => setError("Unable to load the global game state."),
-    );
-  }, []);
 
   useEffect(() => {
     const playersQuery = query(collection(db, "players"), orderBy("balance", "desc"));
@@ -101,24 +78,6 @@ export default function SecretAdminDashboard() {
     }
   };
 
-  const startTournament = async () => {
-    if (!window.confirm("START THE BATTLE? This syncs all players to Tick 0.")) return;
-    await runAction(
-      () => setDoc(doc(db, "system", "gameState"), { isRunning: true, startTime: Date.now() }),
-      { playerId: null, type: null },
-      "Unable to start the tournament.",
-    );
-  };
-
-  const stopTournament = async () => {
-    if (!window.confirm("STOP THE BATTLE? This freezes all charts and locks trading.")) return;
-    await runAction(
-      () => setDoc(doc(db, "system", "gameState"), { isRunning: false, startTime: null }),
-      { playerId: null, type: null },
-      "Unable to stop the tournament.",
-    );
-  };
-
   const handleUpdateBalance = async (player: Player) => {
     const input = window.prompt("Enter new balance for this player:", player.balance.toString());
     if (input === null || input.trim() === "") return;
@@ -144,6 +103,37 @@ export default function SecretAdminDashboard() {
         }),
       { playerId: player.id, type: "disqualify" },
       `Unable to update ${player.alias}'s status.`,
+    );
+  };
+
+  const handleToggleStart = async (player: Player) => {
+    if (!player.isStarted && player.isDisqualified) {
+      setError("Reset or revive this player before starting their challenge.");
+      return;
+    }
+    await runAction(
+      () =>
+        updateDoc(doc(db, "players", player.id), {
+          isStarted: !player.isStarted,
+          startTime: !player.isStarted ? Date.now() : null,
+        }),
+      { playerId: player.id, type: "start" },
+      `Unable to update ${player.alias}'s challenge status.`,
+    );
+  };
+
+  const handleResetPlayer = async (player: Player) => {
+    if (!window.confirm(`Reset ${player.alias}'s balance, DQ status, and challenge timer?`)) return;
+    await runAction(
+      () =>
+        updateDoc(doc(db, "players", player.id), {
+          balance: 10000,
+          isDisqualified: false,
+          isStarted: false,
+          startTime: null,
+        }),
+      { playerId: player.id, type: "reset" },
+      `Unable to reset ${player.alias}.`,
     );
   };
 
@@ -183,42 +173,11 @@ export default function SecretAdminDashboard() {
           </div>
         )}
 
-        <section className="mb-8 flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-2xl md:flex-row md:items-center md:p-6">
-          <div>
-            <h2 className="mb-1 text-xl font-bold text-white">Global Market Engine</h2>
-            <p className="text-sm text-slate-400">
-              Controls the synchronized chart for all players in the room.
-            </p>
+        {players.length > 0 && (
+          <div className="mb-8">
+            <TournamentResults players={players} />
           </div>
-          <div className="flex w-full flex-col items-center gap-4 md:w-auto md:flex-row">
-            <span
-              className={`w-full rounded-lg border px-4 py-3 text-center font-mono font-bold md:w-auto md:py-2 ${
-                gameState.isRunning
-                  ? "animate-pulse border-emerald-500/50 bg-emerald-500/20 text-emerald-400"
-                  : "border-slate-700 bg-slate-800 text-slate-400"
-              }`}
-            >
-              STATUS: {gameState.isRunning ? "LIVE BATTLE RUNNING" : "WAITING / STOPPED"}
-            </span>
-            {!gameState.isRunning ? (
-              <button
-                type="button"
-                onClick={startTournament}
-                className="w-full rounded-lg bg-emerald-600 px-6 py-3 font-black text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-500 md:w-auto"
-              >
-                START 25-MIN TOURNAMENT
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={stopTournament}
-                className="w-full rounded-lg bg-red-600 px-6 py-3 font-black text-white shadow-lg shadow-red-600/20 hover:bg-red-500 md:w-auto"
-              >
-                FORCE STOP BATTLE
-              </button>
-            )}
-          </div>
-        </section>
+        )}
 
         <section className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 shadow-2xl">
           <table className="w-full whitespace-nowrap text-left text-sm">
@@ -228,6 +187,7 @@ export default function SecretAdminDashboard() {
                 <th className="px-6 py-4">Alias</th>
                 <th className="px-6 py-4">Email</th>
                 <th className="px-6 py-4">Status</th>
+                <th className="px-6 py-4">Challenge Status</th>
                 <th className="px-6 py-4">Balance</th>
                 <th className="px-6 py-4 text-right">Admin Actions</th>
               </tr>
@@ -235,7 +195,7 @@ export default function SecretAdminDashboard() {
             <tbody>
               {players.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center italic text-slate-500">
+                  <td colSpan={7} className="px-6 py-8 text-center italic text-slate-500">
                     No players registered yet.
                   </td>
                 </tr>
@@ -256,10 +216,43 @@ export default function SecretAdminDashboard() {
                         {player.isDisqualified ? "Disqualified" : "Active"}
                       </span>
                     </td>
+                    <td className="px-6 py-4">
+                      <span
+                        className={`text-xs font-bold uppercase ${
+                          player.isStarted ? "text-emerald-400" : "text-yellow-500"
+                        }`}
+                      >
+                        {player.isStarted ? "Running / Started" : "In Lobby"}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 font-mono text-lg font-bold">
                       ${player.balance.toFixed(2)}
                     </td>
                     <td className="flex justify-end gap-2 px-6 py-4 text-right">
+                      <button
+                        type="button"
+                        disabled={actionState.playerId !== null || (!player.isStarted && player.isDisqualified)}
+                        onClick={() => void handleToggleStart(player)}
+                        className={`rounded px-3 py-1.5 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                          player.isStarted
+                            ? "bg-slate-700 text-white hover:bg-slate-600"
+                            : "bg-blue-600 text-white hover:bg-blue-500"
+                        }`}
+                      >
+                        {isBusy(player.id, "start")
+                          ? "Saving..."
+                          : player.isStarted
+                            ? "Stop / Pause"
+                            : "Start Challenge"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actionState.playerId !== null}
+                        onClick={() => void handleResetPlayer(player)}
+                        className="rounded bg-purple-500/20 px-3 py-1.5 text-xs font-bold text-purple-300 transition-colors hover:bg-purple-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isBusy(player.id, "reset") ? "Resetting..." : "Reset"}
+                      </button>
                       <button
                         type="button"
                         disabled={actionState.playerId !== null}

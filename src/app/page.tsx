@@ -30,7 +30,6 @@ type Position = {
   time: number;
 };
 type TradeHistory = Position & { exit: number; pnl: number; reason: string };
-type GameState = { isRunning: boolean; startTime: number | null };
 type MarketCandle = {
   tick: number;
   open: number;
@@ -102,10 +101,6 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [alias, setAlias] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
-  const [gameState, setGameState] = useState<GameState>({
-    isRunning: false,
-    startTime: null,
-  });
   const [balance, setBalance] = useState(STARTING_BALANCE);
   const [currentPrice, setCurrentPrice] = useState(initialPrice);
   const [currentTime, setCurrentTime] = useState(0);
@@ -115,6 +110,8 @@ export default function App() {
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [isDisqualified, setIsDisqualified] = useState(false);
+  const [isStarted, setIsStarted] = useState(false);
+  const [playerStartTime, setPlayerStartTime] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
   const [timeUp, setTimeUp] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -124,11 +121,7 @@ export default function App() {
   const timeRef = useRef(currentTime);
   const markersRef = useRef<SeriesMarker<Time>[]>([]);
   const setMarkersRef = useRef<((markers: SeriesMarker<Time>[]) => void) | null>(null);
-  const gameStateRef = useRef(gameState);
-
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
+  const playerStartTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
     positionsRef.current = positions;
@@ -139,13 +132,12 @@ export default function App() {
   }, [currentPrice]);
 
   const updateFirebaseBalance = useCallback(
-    async (newBalance: number, disqualified = false) => {
+    async (newBalance: number, disqualified?: boolean) => {
       if (!userId) return;
       try {
-        await updateDoc(doc(db, "players", userId), {
-          balance: newBalance,
-          isDisqualified: disqualified,
-        });
+        const updates: { balance: number; isDisqualified?: boolean } = { balance: newBalance };
+        if (disqualified !== undefined) updates.isDisqualified = disqualified;
+        await updateDoc(doc(db, "players", userId), updates);
       } catch (error) {
         console.error("Error updating balance:", error);
       }
@@ -188,18 +180,26 @@ export default function App() {
   );
 
   useEffect(() => {
-    return onSnapshot(doc(db, "system", "gameState"), (snapshot) => {
-      if (!snapshot.exists()) {
-        setGameState({ isRunning: false, startTime: null });
-        return;
-      }
+    if (!userId) return;
+    return onSnapshot(doc(db, "players", userId), (snapshot) => {
+      if (!snapshot.exists()) return;
       const data = snapshot.data();
-      setGameState({
-        isRunning: data.isRunning === true,
-        startTime: typeof data.startTime === "number" ? data.startTime : null,
-      });
+      setIsStarted(data.isStarted === true);
+      const nextStartTime = typeof data.startTime === "number" ? data.startTime : null;
+      setPlayerStartTime(nextStartTime);
+      playerStartTimeRef.current = nextStartTime;
+      setIsDisqualified(data.isDisqualified === true);
+      if (typeof data.balance === "number") setBalance(data.balance);
+      if (data.isStarted !== true && screen === "TRADE") {
+        setScreen("LOBBY");
+        setPositions([]);
+        setHistory([]);
+        setTimeUp(false);
+        setTimeLeft(SESSION_SECONDS);
+        sessionEndedRef.current = false;
+      }
     });
-  }, []);
+  }, [screen, userId]);
 
   useEffect(() => {
     if (screen !== "TRADE" || !chartContainerRef.current) return;
@@ -218,9 +218,14 @@ export default function App() {
       wickUpColor: "#10b981",
       wickDownColor: "#ef4444",
     });
-    const baseTimestamp = Math.floor((gameState.startTime ?? Date.now()) / 1000);
-    const preMarket = scriptedMarket
-      .filter((candle) => candle.tick <= 0)
+    const activeStartTime = playerStartTime ?? Date.now();
+    const baseTimestamp = Math.floor(activeStartTime / 1000);
+    const elapsedAtEntry = Math.min(
+      SESSION_SECONDS,
+      Math.max(0, Math.floor((Date.now() - activeStartTime) / 1000)),
+    );
+    const visibleMarket = scriptedMarket
+      .filter((candle) => candle.tick <= elapsedAtEntry)
       .map((candle) => ({
         time: (baseTimestamp + candle.tick) as Time,
         open: candle.open,
@@ -228,7 +233,23 @@ export default function App() {
         low: candle.low,
         close: candle.close,
       }));
-    series.setData(preMarket);
+    series.setData(visibleMarket);
+    const entryCandle = scriptedMarket.find((candle) => candle.tick === elapsedAtEntry);
+    if (entryCandle) {
+      priceRef.current = entryCandle.close;
+      timeRef.current = elapsedAtEntry;
+    }
+    const initialStateTimer = window.setTimeout(() => {
+      if (entryCandle) {
+        setCurrentTime(elapsedAtEntry);
+        setCurrentPrice(entryCandle.close);
+        setTimeLeft(SESSION_SECONDS - elapsedAtEntry);
+      }
+      if (elapsedAtEntry >= SESSION_SECONDS) setTimeUp(true);
+    }, 0);
+    if (elapsedAtEntry >= SESSION_SECONDS) {
+      sessionEndedRef.current = true;
+    }
     markersRef.current = [];
     const markers = createSeriesMarkers<Time>(series, []);
     setMarkersRef.current = markers.setMarkers;
@@ -236,14 +257,14 @@ export default function App() {
       chart.applyOptions({ width: container.clientWidth });
     });
     resizeObserver.observe(container);
-    let renderedTick = 0;
+    let renderedTick = elapsedAtEntry;
 
     const interval = setInterval(() => {
-      const state = gameStateRef.current;
-      if (sessionEndedRef.current || !state.isRunning || !state.startTime) return;
+      const currentStartTime = playerStartTimeRef.current;
+      if (sessionEndedRef.current || !isStarted || !currentStartTime) return;
       const elapsed = Math.min(
         SESSION_SECONDS,
-        Math.max(0, Math.floor((Date.now() - state.startTime) / 1000)),
+        Math.max(0, Math.floor((Date.now() - currentStartTime) / 1000)),
       );
       const candle = scriptedMarket.find((item) => item.tick === elapsed);
       if (!candle || elapsed <= renderedTick) return;
@@ -267,20 +288,21 @@ export default function App() {
     }, 100);
 
     return () => {
+      clearTimeout(initialStateTimer);
       clearInterval(interval);
       markers.setMarkers([]);
       setMarkersRef.current = null;
       resizeObserver.disconnect();
       chart.remove();
     };
-  }, [screen, gameState.startTime]);
+  }, [isStarted, playerStartTime, screen]);
 
   useEffect(() => {
-    if (screen !== "TRADE" || timeUp || isDisqualified || !gameState.isRunning || !gameState.startTime) {
+    if (screen !== "TRADE" || timeUp || isDisqualified || !isStarted || !playerStartTime) {
       return;
     }
     const timer = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - gameState.startTime!) / 1000);
+      const elapsed = Math.floor((Date.now() - playerStartTime) / 1000);
       const remaining = Math.max(0, SESSION_SECONDS - elapsed);
       setTimeLeft(remaining);
       if (remaining === 0) {
@@ -289,7 +311,7 @@ export default function App() {
       }
     }, 250);
     return () => clearInterval(timer);
-  }, [gameState, isDisqualified, screen, timeUp]);
+  }, [isDisqualified, isStarted, playerStartTime, screen, timeUp]);
 
   useEffect(() => {
     if (equity <= 2000 && !isDisqualified) {
@@ -298,10 +320,11 @@ export default function App() {
         sessionEndedRef.current = true;
         closeAllTrades("MARGIN CALL");
         setBalance(2000);
+        void updateFirebaseBalance(2000, true);
       }, 0);
       return () => clearTimeout(timeout);
     }
-  }, [closeAllTrades, equity, isDisqualified]);
+  }, [closeAllTrades, equity, isDisqualified, updateFirebaseBalance]);
 
   useEffect(() => {
     if (!timeUp) return;
@@ -351,6 +374,8 @@ export default function App() {
         alias,
         balance: STARTING_BALANCE,
         isDisqualified: false,
+        isStarted: false,
+        startTime: null,
       });
       setUserId(player.id);
       setScreen("LOBBY");
@@ -361,19 +386,32 @@ export default function App() {
   };
 
   const handleTrade = (type: TradeType) => {
-    if (isDisqualified || timeUp || !gameState.isRunning || lotSize <= 0) return;
+    const stopLoss = slInput.trim() === "" ? null : Number(slInput);
+    const takeProfit = tpInput.trim() === "" ? null : Number(tpInput);
+    if (
+      isDisqualified ||
+      timeUp ||
+      !isStarted ||
+      !playerStartTime ||
+      !Number.isFinite(lotSize) ||
+      lotSize <= 0 ||
+      (stopLoss !== null && !Number.isFinite(stopLoss)) ||
+      (takeProfit !== null && !Number.isFinite(takeProfit))
+    ) {
+      return;
+    }
     const position: Position = {
       id: crypto.randomUUID(),
       type,
-      entry: currentPrice,
+      entry: priceRef.current,
       lots: lotSize,
-      sl: slInput ? Number(slInput) : null,
-      tp: tpInput ? Number(tpInput) : null,
+      sl: stopLoss,
+      tp: takeProfit,
       time: timeRef.current,
     };
     setPositions((previous) => [...previous, position]);
     const marker: SeriesMarker<Time> = {
-      time: position.time as Time,
+      time: (Math.floor(playerStartTime / 1000) + position.time) as Time,
       position: type === "BUY" ? "belowBar" : "aboveBar",
       color: type === "BUY" ? "#10b981" : "#ef4444",
       shape: type === "BUY" ? "arrowUp" : "arrowDown",
@@ -406,7 +444,25 @@ export default function App() {
   };
 
   const enterTradingFloor = () => {
-    if (!gameState.isRunning) return;
+    if (!isStarted || !playerStartTime || isDisqualified || timeUp) return;
+    const elapsed = Math.min(
+      SESSION_SECONDS,
+      Math.max(0, Math.floor((Date.now() - playerStartTime) / 1000)),
+    );
+    if (elapsed >= SESSION_SECONDS) {
+      setTimeLeft(0);
+      setTimeUp(true);
+      sessionEndedRef.current = true;
+      return;
+    }
+    const entryCandle = scriptedMarket.find((candle) => candle.tick === elapsed);
+    if (entryCandle) {
+      setCurrentTime(elapsed);
+      setCurrentPrice(entryCandle.close);
+      setTimeLeft(SESSION_SECONDS - elapsed);
+      priceRef.current = entryCandle.close;
+      timeRef.current = elapsed;
+    }
     setScreen("TRADE");
     sessionEndedRef.current = false;
   };
@@ -475,18 +531,18 @@ export default function App() {
             </p>
             <div className="mt-8 rounded-xl border border-slate-800 bg-slate-950 p-5">
               <p className="text-xs font-bold uppercase text-slate-500">Global market status</p>
-              <p className={`mt-2 text-xl font-black ${gameState.isRunning ? "text-emerald-400" : "text-yellow-400"}`}>
-                {gameState.isRunning ? "LIVE & RUNNING" : "WAITING FOR ADMIN"}
+              <p className={`mt-2 text-xl font-black ${isStarted ? "text-emerald-400" : "text-yellow-400"}`}>
+              {isStarted ? "CHALLENGE STARTED" : "WAITING FOR ADMIN"}
               </p>
               <p className="mt-2 text-sm text-slate-400">
-                {gameState.isRunning
-                  ? "The synchronized market is ready. Enter when you are prepared."
-                  : "The tournament will begin when the event administrator starts it."}
+              {isStarted
+                ? "Your individual 25-minute challenge is ready."
+                : "The administrator will start your individual challenge when ready."}
               </p>
             </div>
             <button
               onClick={enterTradingFloor}
-              disabled={!gameState.isRunning}
+              disabled={!isStarted || !playerStartTime}
               className="mt-8 w-full rounded-lg bg-blue-600 p-3 font-bold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ENTER TRADING FLOOR
@@ -533,7 +589,7 @@ export default function App() {
               BATTLE ENDED: TIME IS UP. ALL TRADES CLOSED.
             </div>
           )}
-          {!gameState.isRunning && !timeUp && !isDisqualified && (
+          {!isStarted && !timeUp && !isDisqualified && (
             <div className="rounded-xl border border-yellow-500/50 bg-yellow-500/10 p-4 text-center text-lg font-bold text-yellow-400">
               WAITING FOR ADMIN: MARKET TRADING IS PAUSED.
             </div>
@@ -557,7 +613,7 @@ export default function App() {
                   step="0.1"
                   onChange={(event) => setLotSize(Number(event.target.value))}
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white focus:border-blue-500 focus:outline-none"
-                  disabled={isDisqualified || timeUp || !gameState.isRunning}
+                  disabled={isDisqualified || timeUp || !isStarted}
                 />
               </label>
               <div className="grid grid-cols-2 gap-3">
@@ -573,21 +629,21 @@ export default function App() {
                       value={value as string}
                       onChange={(event) => (setter as (value: string) => void)(event.target.value)}
                       className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 font-mono text-white focus:outline-none"
-                      disabled={isDisqualified || timeUp || !gameState.isRunning}
+                      disabled={isDisqualified || timeUp || !isStarted}
                     />
                   </label>
                 ))}
               </div>
               <button
                 onClick={() => handleTrade("SELL")}
-                disabled={isDisqualified || timeUp || !gameState.isRunning}
+                disabled={isDisqualified || timeUp || !isStarted}
                 className="rounded-lg bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 disabled:opacity-50"
               >
                 SELL BY MARKET
               </button>
               <button
                 onClick={() => handleTrade("BUY")}
-                disabled={isDisqualified || timeUp || !gameState.isRunning}
+                disabled={isDisqualified || timeUp || !isStarted}
                 className="rounded-lg bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 disabled:opacity-50"
               >
                 BUY BY MARKET
@@ -656,23 +712,39 @@ export default function App() {
       )}
 
       {screen === "TRADE" && isDisqualified && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 p-6 text-center backdrop-blur-sm">
-          <div className="max-w-2xl">
-            <p className="mb-4 text-sm font-bold uppercase tracking-[0.35em] text-red-500">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-md">
+          <div className="flex w-full max-w-xl flex-col items-center rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center shadow-[0_0_100px_rgba(220,38,38,0.2)] md:p-12">
+            <span className="mb-2 font-mono text-xs font-bold uppercase tracking-widest text-red-500 md:text-sm">
               $8,000 loss limit reached
-            </p>
-            <h2 className="animate-pulse text-7xl font-black tracking-tight text-red-500 drop-shadow-[0_0_24px_rgba(239,68,68,0.8)] sm:text-9xl">
+            </span>
+            <h2 className="mb-4 text-4xl font-black tracking-wider text-red-600 drop-shadow-[0_0_30px_rgba(220,38,38,0.8)] md:text-7xl">
               DISQUALIFIED
             </h2>
-            <p className="mt-6 text-lg text-slate-300">
+            <p className="mb-8 text-sm text-slate-400 md:text-base">
               Your trading account has been closed for this battle.
             </p>
             <button
               onClick={() => goToScreen("LOBBY")}
-              className="mt-8 rounded-lg bg-red-600 px-6 py-3 font-bold text-white hover:bg-red-500"
+              className="w-full max-w-xs rounded-xl bg-red-600 px-8 py-4 text-base font-bold text-white shadow-lg shadow-red-600/30 transition-all hover:bg-red-500"
             >
               RETURN TO LOBBY
             </button>
+          </div>
+        </div>
+      )}
+
+      {screen === "TRADE" && !isStarted && !isDisqualified && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-md">
+          <div className="flex w-full max-w-xl flex-col items-center rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center shadow-2xl md:p-12">
+            <div className="mb-6 flex h-16 w-16 animate-pulse items-center justify-center rounded-2xl border border-yellow-500/30 bg-yellow-500/10">
+              <span className="text-2xl" aria-hidden="true">⏳</span>
+            </div>
+            <h2 className="mb-3 text-2xl font-black tracking-wider text-yellow-500 md:text-4xl">
+              WAITING FOR ADMIN
+            </h2>
+            <p className="text-sm text-slate-400 md:text-base">
+              Admin is about to start your individual challenge. Get ready!
+            </p>
           </div>
         </div>
       )}
