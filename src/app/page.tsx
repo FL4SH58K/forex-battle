@@ -6,7 +6,6 @@ import {
   ColorType,
   createChart,
   createSeriesMarkers,
-  type CandlestickData,
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
@@ -15,13 +14,11 @@ import {
   collection,
   doc,
   onSnapshot,
-  orderBy,
-  query,
   updateDoc,
 } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 
-type Screen = "LOGIN" | "TRADE" | "LEADERBOARD";
+type Screen = "LOGIN" | "LOBBY" | "TRADE";
 type TradeType = "BUY" | "SELL";
 type Position = {
   id: string;
@@ -33,34 +30,67 @@ type Position = {
   time: number;
 };
 type TradeHistory = Position & { exit: number; pnl: number; reason: string };
-type Player = { id: string; alias: string; balance: number; isDisqualified: boolean };
+type GameState = { isRunning: boolean; startTime: number | null };
+type MarketCandle = {
+  tick: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
 
 const STARTING_BALANCE = 10000;
 const SESSION_SECONDS = 25 * 60;
 
-const generateData = (): CandlestickData<Time>[] => {
-  const data: CandlestickData<Time>[] = [];
-  let price = 2000.5;
-  const start = Math.floor(Date.now() / 1000) - 3600;
+const generateScriptedMarket = (): MarketCandle[] => {
+  const candles: MarketCandle[] = [];
+  let price = 2000;
 
-  for (let index = 0; index < 3600; index += 1) {
-    const volatility = (Math.random() - 0.5) * 2;
+  for (let tick = -100; tick <= SESSION_SECONDS; tick += 1) {
+    let trend = 0;
+    let volatility = 0.5;
+    if (tick < 0) {
+      trend = 0;
+    } else if (tick < 300) {
+      trend = 0.2;
+      volatility = 0.6;
+    } else if (tick < 480) {
+      volatility = 4;
+    } else if (tick < 720) {
+      trend = -1.5;
+      volatility = 1.8;
+    } else if (tick < 1080) {
+      trend = 0.05;
+    } else if (tick < 1320) {
+      trend = -0.5;
+      volatility = 1;
+    } else {
+      trend = 2;
+      volatility = 3;
+    }
+
+    const randomA = Math.sin(tick * 12.9898) * 43758.5453;
+    const randomB = Math.sin(tick * 78.233) * 43758.5453;
+    const fractionA = randomA - Math.floor(randomA);
+    const fractionB = randomB - Math.floor(randomB);
+    const move = trend + (fractionA > 0.5 ? 1 : -1) * fractionB * volatility;
     const open = price;
-    const close = open + volatility;
-    data.push({
-      time: (start + index) as Time,
+    const close = open + move;
+    candles.push({
+      tick,
       open,
-      high: Math.max(open, close) + Math.random(),
-      low: Math.min(open, close) - Math.random(),
+      high: Math.max(open, close) + fractionA * volatility,
+      low: Math.min(open, close) - (1 - fractionB) * volatility,
       close,
     });
     price = close;
   }
-  return data;
+  return candles;
 };
 
-const historicalData = generateData();
-const initialPrice = historicalData[historicalData.length - 1].close;
+const scriptedMarket = generateScriptedMarket();
+const initialCandle = scriptedMarket.find((candle) => candle.tick === 0) ?? scriptedMarket[0];
+const initialPrice = initialCandle.close;
 
 const formatTime = (seconds: number) =>
   `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60)
@@ -72,10 +102,13 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [alias, setAlias] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
-  const [leaderboard, setLeaderboard] = useState<Player[]>([]);
+  const [gameState, setGameState] = useState<GameState>({
+    isRunning: false,
+    startTime: null,
+  });
   const [balance, setBalance] = useState(STARTING_BALANCE);
   const [currentPrice, setCurrentPrice] = useState(initialPrice);
-  const [currentTime, setCurrentTime] = useState(Number(historicalData.at(-1)?.time));
+  const [currentTime, setCurrentTime] = useState(0);
   const [positions, setPositions] = useState<Position[]>([]);
   const [history, setHistory] = useState<TradeHistory[]>([]);
   const [lotSize, setLotSize] = useState(0.1);
@@ -91,6 +124,11 @@ export default function App() {
   const timeRef = useRef(currentTime);
   const markersRef = useRef<SeriesMarker<Time>[]>([]);
   const setMarkersRef = useRef<((markers: SeriesMarker<Time>[]) => void) | null>(null);
+  const gameStateRef = useRef(gameState);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   useEffect(() => {
     positionsRef.current = positions;
@@ -150,6 +188,20 @@ export default function App() {
   );
 
   useEffect(() => {
+    return onSnapshot(doc(db, "system", "gameState"), (snapshot) => {
+      if (!snapshot.exists()) {
+        setGameState({ isRunning: false, startTime: null });
+        return;
+      }
+      const data = snapshot.data();
+      setGameState({
+        isRunning: data.isRunning === true,
+        startTime: typeof data.startTime === "number" ? data.startTime : null,
+      });
+    });
+  }, []);
+
+  useEffect(() => {
     if (screen !== "TRADE" || !chartContainerRef.current) return;
     const container = chartContainerRef.current;
     const chart = createChart(container, {
@@ -166,7 +218,17 @@ export default function App() {
       wickUpColor: "#10b981",
       wickDownColor: "#ef4444",
     });
-    series.setData(historicalData);
+    const baseTimestamp = Math.floor((gameState.startTime ?? Date.now()) / 1000);
+    const preMarket = scriptedMarket
+      .filter((candle) => candle.tick <= 0)
+      .map((candle) => ({
+        time: (baseTimestamp + candle.tick) as Time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      }));
+    series.setData(preMarket);
     markersRef.current = [];
     const markers = createSeriesMarkers<Time>(series, []);
     setMarkersRef.current = markers.setMarkers;
@@ -174,23 +236,35 @@ export default function App() {
       chart.applyOptions({ width: container.clientWidth });
     });
     resizeObserver.observe(container);
-    let lastPrice = initialPrice;
-    let time = Number(historicalData.at(-1)?.time);
+    let renderedTick = 0;
 
     const interval = setInterval(() => {
-      if (sessionEndedRef.current) return;
-      time += 1;
-      const open = lastPrice;
-      const close = open + (Math.random() - 0.5) * 2.5;
-      const high = Math.max(open, close) + Math.random() * 0.8;
-      const low = Math.min(open, close) - Math.random() * 0.8;
-      series.update({ time: time as Time, open, high, low, close });
-      timeRef.current = time;
-      priceRef.current = close;
-      setCurrentTime(time);
-      setCurrentPrice(close);
-      lastPrice = close;
-    }, 1000);
+      const state = gameStateRef.current;
+      if (sessionEndedRef.current || !state.isRunning || !state.startTime) return;
+      const elapsed = Math.min(
+        SESSION_SECONDS,
+        Math.max(0, Math.floor((Date.now() - state.startTime) / 1000)),
+      );
+      const candle = scriptedMarket.find((item) => item.tick === elapsed);
+      if (!candle || elapsed <= renderedTick) return;
+      series.update({
+        time: (baseTimestamp + elapsed) as Time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      });
+      renderedTick = elapsed;
+      timeRef.current = elapsed;
+      priceRef.current = candle.close;
+      setCurrentTime(elapsed);
+      setCurrentPrice(candle.close);
+      setTimeLeft(SESSION_SECONDS - elapsed);
+      if (elapsed >= SESSION_SECONDS) {
+        setTimeUp(true);
+        sessionEndedRef.current = true;
+      }
+    }, 100);
 
     return () => {
       clearInterval(interval);
@@ -199,22 +273,23 @@ export default function App() {
       resizeObserver.disconnect();
       chart.remove();
     };
-  }, [screen]);
+  }, [screen, gameState.startTime]);
 
   useEffect(() => {
-    if (screen !== "TRADE" || timeUp || isDisqualified) return;
+    if (screen !== "TRADE" || timeUp || isDisqualified || !gameState.isRunning || !gameState.startTime) {
+      return;
+    }
     const timer = setInterval(() => {
-      setTimeLeft((previous) => {
-        if (previous <= 1) {
-          setTimeUp(true);
-          sessionEndedRef.current = true;
-          return 0;
-        }
-        return previous - 1;
-      });
-    }, 1000);
+      const elapsed = Math.floor((Date.now() - gameState.startTime!) / 1000);
+      const remaining = Math.max(0, SESSION_SECONDS - elapsed);
+      setTimeLeft(remaining);
+      if (remaining === 0) {
+        setTimeUp(true);
+        sessionEndedRef.current = true;
+      }
+    }, 250);
     return () => clearInterval(timer);
-  }, [isDisqualified, screen, timeUp]);
+  }, [gameState, isDisqualified, screen, timeUp]);
 
   useEffect(() => {
     if (equity <= 2000 && !isDisqualified) {
@@ -267,15 +342,6 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [balance, calculatePnL, currentPrice, positions, screen, updateFirebaseBalance]);
 
-  useEffect(() => {
-    const playersQuery = query(collection(db, "players"), orderBy("balance", "desc"));
-    return onSnapshot(playersQuery, (snapshot) => {
-      setLeaderboard(
-        snapshot.docs.map((player) => ({ id: player.id, ...player.data() })) as Player[],
-      );
-    });
-  }, []);
-
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!email || !alias) return;
@@ -287,7 +353,7 @@ export default function App() {
         isDisqualified: false,
       });
       setUserId(player.id);
-      setScreen("TRADE");
+      setScreen("LOBBY");
       sessionEndedRef.current = false;
     } catch (error) {
       console.error("Error creating player profile:", error);
@@ -295,7 +361,7 @@ export default function App() {
   };
 
   const handleTrade = (type: TradeType) => {
-    if (isDisqualified || timeUp || lotSize <= 0) return;
+    if (isDisqualified || timeUp || !gameState.isRunning || lotSize <= 0) return;
     const position: Position = {
       id: crypto.randomUUID(),
       type,
@@ -333,10 +399,16 @@ export default function App() {
   };
 
   const goToScreen = (nextScreen: Screen) => {
-    if (nextScreen === "LOGIN") {
+    if (nextScreen !== "TRADE") {
       sessionEndedRef.current = true;
     }
     setScreen(nextScreen);
+  };
+
+  const enterTradingFloor = () => {
+    if (!gameState.isRunning) return;
+    setScreen("TRADE");
+    sessionEndedRef.current = false;
   };
 
   return (
@@ -356,21 +428,7 @@ export default function App() {
             >
               {formatTime(timeLeft)}
             </div>
-            <button
-              onClick={() => goToScreen("LEADERBOARD")}
-              className="rounded bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
-            >
-              Leaderboard
-            </button>
           </div>
-        )}
-        {screen === "LEADERBOARD" && (
-          <button
-            onClick={() => goToScreen(userId ? "TRADE" : "LOGIN")}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
-          >
-            {userId ? "Back to Terminal" : "Back to Login"}
-          </button>
         )}
       </header>
 
@@ -405,6 +463,36 @@ export default function App() {
             </button>
           </form>
         </div>
+      )}
+
+      {screen === "LOBBY" && (
+        <main className="mx-auto flex min-h-[70vh] max-w-xl items-center justify-center">
+          <section className="w-full rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-2xl">
+            <p className="text-sm font-bold uppercase tracking-[0.3em] text-blue-400">Trader lobby</p>
+            <h2 className="mt-3 text-3xl font-black text-white">Welcome, {alias}</h2>
+            <p className="mt-3 text-slate-400">
+              Your starting balance is <span className="font-mono text-emerald-400">$10,000.00</span>.
+            </p>
+            <div className="mt-8 rounded-xl border border-slate-800 bg-slate-950 p-5">
+              <p className="text-xs font-bold uppercase text-slate-500">Global market status</p>
+              <p className={`mt-2 text-xl font-black ${gameState.isRunning ? "text-emerald-400" : "text-yellow-400"}`}>
+                {gameState.isRunning ? "LIVE & RUNNING" : "WAITING FOR ADMIN"}
+              </p>
+              <p className="mt-2 text-sm text-slate-400">
+                {gameState.isRunning
+                  ? "The synchronized market is ready. Enter when you are prepared."
+                  : "The tournament will begin when the event administrator starts it."}
+              </p>
+            </div>
+            <button
+              onClick={enterTradingFloor}
+              disabled={!gameState.isRunning}
+              className="mt-8 w-full rounded-lg bg-blue-600 p-3 font-bold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ENTER TRADING FLOOR
+            </button>
+          </section>
+        </main>
       )}
 
       {screen === "TRADE" && (
@@ -445,6 +533,11 @@ export default function App() {
               BATTLE ENDED: TIME IS UP. ALL TRADES CLOSED.
             </div>
           )}
+          {!gameState.isRunning && !timeUp && !isDisqualified && (
+            <div className="rounded-xl border border-yellow-500/50 bg-yellow-500/10 p-4 text-center text-lg font-bold text-yellow-400">
+              WAITING FOR ADMIN: MARKET TRADING IS PAUSED.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
             <div className="relative col-span-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
@@ -464,7 +557,7 @@ export default function App() {
                   step="0.1"
                   onChange={(event) => setLotSize(Number(event.target.value))}
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white focus:border-blue-500 focus:outline-none"
-                  disabled={isDisqualified || timeUp}
+                  disabled={isDisqualified || timeUp || !gameState.isRunning}
                 />
               </label>
               <div className="grid grid-cols-2 gap-3">
@@ -480,21 +573,21 @@ export default function App() {
                       value={value as string}
                       onChange={(event) => (setter as (value: string) => void)(event.target.value)}
                       className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 font-mono text-white focus:outline-none"
-                      disabled={isDisqualified || timeUp}
+                      disabled={isDisqualified || timeUp || !gameState.isRunning}
                     />
                   </label>
                 ))}
               </div>
               <button
                 onClick={() => handleTrade("SELL")}
-                disabled={isDisqualified || timeUp}
+                disabled={isDisqualified || timeUp || !gameState.isRunning}
                 className="rounded-lg bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 disabled:opacity-50"
               >
                 SELL BY MARKET
               </button>
               <button
                 onClick={() => handleTrade("BUY")}
-                disabled={isDisqualified || timeUp}
+                disabled={isDisqualified || timeUp || !gameState.isRunning}
                 className="rounded-lg bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 disabled:opacity-50"
               >
                 BUY BY MARKET
@@ -575,29 +668,13 @@ export default function App() {
               Your trading account has been closed for this battle.
             </p>
             <button
-              onClick={() => goToScreen("LEADERBOARD")}
+              onClick={() => goToScreen("LOBBY")}
               className="mt-8 rounded-lg bg-red-600 px-6 py-3 font-bold text-white hover:bg-red-500"
             >
-              VIEW LEADERBOARD
+              RETURN TO LOBBY
             </button>
           </div>
         </div>
-      )}
-
-      {screen === "LEADERBOARD" && (
-        <main className="mx-auto mt-10 max-w-3xl">
-          <h2 className="mb-8 text-center text-3xl font-black text-white">GLOBAL RANKINGS</h2>
-          <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-            {leaderboard.length === 0 ? (
-              <p className="p-8 text-center text-slate-500">No traders registered yet.</p>
-            ) : leaderboard.map((player, index) => (
-              <div key={player.id} className="flex items-center justify-between border-b border-slate-800 p-5 last:border-0 hover:bg-slate-800/50">
-                <div className="flex items-center gap-5"><span className="w-6 text-center font-mono text-xl font-bold text-slate-500">{index + 1}</span><span className="font-bold text-white">{player.alias}{player.isDisqualified && <span className="ml-2 rounded border border-red-500 px-2 py-0.5 text-xs text-red-500">DISQUALIFIED</span>}</span></div>
-                <span className={`font-mono text-xl font-bold ${player.balance >= STARTING_BALANCE ? "text-emerald-400" : "text-red-400"}`}>${player.balance.toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-        </main>
       )}
     </div>
   );
