@@ -78,7 +78,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(Number(historicalData.at(-1)?.time));
   const [positions, setPositions] = useState<Position[]>([]);
   const [history, setHistory] = useState<TradeHistory[]>([]);
-  const [lotSize, setLotSize] = useState(1);
+  const [lotSize, setLotSize] = useState(0.1);
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [isDisqualified, setIsDisqualified] = useState(false);
@@ -560,6 +560,28 @@ export default function App() {
             </section>
           )}
         </main>
+      )}
+
+      {screen === "TRADE" && isDisqualified && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 p-6 text-center backdrop-blur-sm">
+          <div className="max-w-2xl">
+            <p className="mb-4 text-sm font-bold uppercase tracking-[0.35em] text-red-500">
+              $8,000 loss limit reached
+            </p>
+            <h2 className="animate-pulse text-7xl font-black tracking-tight text-red-500 drop-shadow-[0_0_24px_rgba(239,68,68,0.8)] sm:text-9xl">
+              DISQUALIFIED
+            </h2>
+            <p className="mt-6 text-lg text-slate-300">
+              Your trading account has been closed for this battle.
+            </p>
+            <button
+              onClick={() => goToScreen("LEADERBOARD")}
+              className="mt-8 rounded-lg bg-red-600 px-6 py-3 font-bold text-white hover:bg-red-500"
+            >
+              VIEW LEADERBOARD
+            </button>
+          </div>
+        </div>
       )}
 
       {screen === "LEADERBOARD" && (
