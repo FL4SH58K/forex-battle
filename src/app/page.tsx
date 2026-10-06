@@ -39,6 +39,8 @@ type MarketCandle = {
 };
 
 const STARTING_BALANCE = 10000;
+const MAX_TOTAL_LOSS = 2000;
+const MIN_EQUITY = STARTING_BALANCE - MAX_TOTAL_LOSS;
 const SESSION_SECONDS = 25 * 60;
 const MAX_OPEN_POSITIONS = 5;
 const MAX_LOT_SIZE = 1.5;
@@ -133,7 +135,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [positions, setPositions] = useState<Position[]>([]);
   const [history, setHistory] = useState<TradeHistory[]>([]);
-  const [lotSize, setLotSize] = useState(0.1);
+  const [lotSize, setLotSize] = useState("0.1");
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [isDisqualified, setIsDisqualified] = useState(false);
@@ -396,13 +398,11 @@ export default function App() {
   }, [isDisqualified, isStarted, playerStartTime, screen, timeUp]);
 
   useEffect(() => {
-    if (equity <= 2000 && !isDisqualified) {
+    if (equity <= MIN_EQUITY && !isDisqualified) {
       const timeout = setTimeout(() => {
         setIsDisqualified(true);
         sessionEndedRef.current = true;
         closeAllTrades("MARGIN CALL");
-        setBalance(2000);
-        void updateFirebaseBalance(2000, true);
       }, 0);
       return () => clearTimeout(timeout);
     }
@@ -474,6 +474,7 @@ export default function App() {
   };
 
   const handleTrade = (type: TradeType) => {
+    const lotValue = Number(lotSize);
     const stopLoss = slInput.trim() === "" ? null : Number(slInput);
     const takeProfit = tpInput.trim() === "" ? null : Number(tpInput);
     if (
@@ -481,9 +482,9 @@ export default function App() {
       timeUp ||
       !isStarted ||
       !playerStartTime ||
-      !Number.isFinite(lotSize) ||
-      lotSize <= 0 ||
-      lotSize > MAX_LOT_SIZE ||
+      !Number.isFinite(lotValue) ||
+      lotValue <= 0 ||
+      lotValue > MAX_LOT_SIZE ||
       positionsRef.current.length >= MAX_OPEN_POSITIONS ||
       (stopLoss !== null && !Number.isFinite(stopLoss)) ||
       (takeProfit !== null && !Number.isFinite(takeProfit))
@@ -494,7 +495,7 @@ export default function App() {
       id: crypto.randomUUID(),
       type,
       entry: priceRef.current,
-      lots: lotSize,
+      lots: lotValue,
       sl: stopLoss,
       tp: takeProfit,
       time: timeRef.current,
@@ -505,7 +506,7 @@ export default function App() {
       position: type === "BUY" ? "belowBar" : "aboveBar",
       color: type === "BUY" ? "#10b981" : "#ef4444",
       shape: type === "BUY" ? "arrowUp" : "arrowDown",
-      text: `${type} ${lotSize}`,
+      text: `${type} ${lotValue}`,
       price: position.entry,
     };
     markersRef.current = [
@@ -663,15 +664,20 @@ export default function App() {
               </div>
             ))}
             <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <p className="text-xs font-bold uppercase text-slate-500">Loss Limit ($8,000 Max)</p>
+              <p className="text-xs font-bold uppercase text-slate-500">Loss Limit (${MAX_TOTAL_LOSS.toLocaleString()} Max)</p>
               <div className="mt-1 flex justify-between font-mono text-sm">
-                <span>Liq: $2,000</span>
+                <span>Min equity: ${MIN_EQUITY.toLocaleString()}</span>
                 <span>${equity.toFixed(0)}</span>
               </div>
               <div className="absolute bottom-0 left-0 h-1 w-full bg-slate-800">
                 <div
-                  className={`h-full ${equity < 4000 ? "bg-red-500" : "bg-blue-500"}`}
-                  style={{ width: `${Math.min(100, Math.max(0, ((equity - 2000) / 8000) * 100))}%` }}
+                  className={`h-full ${equity <= MIN_EQUITY ? "bg-red-500" : "bg-blue-500"}`}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.max(0, ((equity - MIN_EQUITY) / MAX_TOTAL_LOSS) * 100),
+                    )}%`,
+                  }}
                 />
               </div>
             </div>
@@ -679,7 +685,7 @@ export default function App() {
 
           {isDisqualified && (
             <div className="rounded-xl border border-red-500 bg-red-500/10 p-4 text-center text-lg font-bold text-red-500">
-              ACCOUNT BLOWN: $8,000 LOSS LIMIT REACHED. DISQUALIFIED.
+              ACCOUNT BLOWN: $2,000 LOSS LIMIT REACHED. DISQUALIFIED.
             </div>
           )}
           {timeUp && (
@@ -710,7 +716,7 @@ export default function App() {
                   min="0.1"
                   max={MAX_LOT_SIZE}
                   step="0.1"
-                  onChange={(event) => setLotSize(Number(event.target.value))}
+                  onChange={(event) => setLotSize(event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base font-mono text-white focus:border-blue-500 focus:outline-none"
                   disabled={isDisqualified || timeUp || !isStarted}
                 />
@@ -834,7 +840,7 @@ export default function App() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-md">
           <div className="flex w-full max-w-xl flex-col items-center rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center shadow-[0_0_100px_rgba(220,38,38,0.2)] md:p-12">
             <span className="mb-2 font-mono text-xs font-bold uppercase tracking-widest text-red-500 md:text-sm">
-              $8,000 loss limit reached
+              $2,000 loss limit reached
             </span>
             <h2 className="mb-4 text-4xl font-black tracking-wider text-red-600 drop-shadow-[0_0_30px_rgba(220,38,38,0.8)] md:text-7xl">
               DISQUALIFIED
